@@ -285,7 +285,7 @@
 
   <header>
     <h1>Quadro de respostas — Métodos Ágeis</h1>
-    <p>Escreva, com suas próprias palavras, um resumo de cada metodologia. O sistema acompanha como o texto foi escrito, sinaliza trechos colados diretamente da área de transferência e, ao enviar, gera automaticamente um arquivo .doc protegido contra edição com um código de verificação.</p>
+    <p>Escreva, com suas próprias palavras, um resumo de cada metodologia. O sistema acompanha como o texto foi escrito, sinaliza trechos colados diretamente da área de transferência e, ao enviar, gera automaticamente um arquivo .pdf protegido contra cópia e edição, com um código de verificação.</p>
   </header>
 
   <div class="id-row">
@@ -365,14 +365,14 @@
   </div>
 
   <div class="panel-toggle">
-    <button class="secondary" id="togglePanel" style="visibility: hidden">Ver todas as respostas enviadas (professor)</button>
+    <button class="secondary" id="togglePanel" style="visibility: hidden"></button>
   </div>
   <div class="panel" id="panel">
     <h3>Respostas enviadas por todos os alunos</h3>
     <p class="note" style="margin-top:0;padding-top:0;border-top:none;">Estes dados ficam salvos de forma compartilhada nesta página — qualquer pessoa que abrir este mesmo link pode visualizar a lista abaixo.</p>
 
     <div style="margin-bottom:20px;">
-      <label for="verifyInput" style="font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--ink-soft);">VERIFICAR CÓDIGO DO .DOC RECEBIDO</label>
+      <label for="verifyInput" style="font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--ink-soft);">VERIFICAR CÓDIGO DO .PDF RECEBIDO</label>
       <div style="display:flex; gap:8px; margin-top:5px; flex-wrap:wrap;">
         <input id="verifyInput" type="text" placeholder="Ex.: A1B2-C3D4-E5F6-0000" style="flex:1; min-width:200px; padding:9px 12px; border:1px solid var(--line); border-radius:3px; font-family:'JetBrains Mono', monospace; font-size:12px; background:#FBF9F3;">
         <button class="secondary" id="verifyBtn">Verificar</button>
@@ -385,6 +385,7 @@
 
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
   const fields = ["xp", "scrum", "kanban"];
   const stats = {};
@@ -508,11 +509,22 @@
     const code = document.getElementById("verifyInput").value.trim().toUpperCase();
     if (!code){ resultDiv.innerHTML = ""; return; }
     resultDiv.innerHTML = "Verificando...";
+    const labels = { xp: "XP", scrum: "Scrum", kanban: "Kanban" };
     try{
       const res = await window.storage.get(`envio:${code}`, true);
       if (res && res.value){
         const entry = JSON.parse(res.value);
-        resultDiv.innerHTML = `<span class="badge ok">código autêntico</span> — este .doc foi gerado por este site em nome de <strong>${escapeHtml(entry.nome)}</strong> (${escapeHtml(entry.turma || "sem turma")}), em ${new Date(entry.when).toLocaleString("pt-BR")}.`;
+        const originalHtml = fields.map(f => `
+          <div style="margin-top:10px; border-top:1px dashed var(--line); padding-top:8px;">
+            <div style="font-family:'JetBrains Mono', monospace; font-size:10.5px; color:var(--ink-soft); margin-bottom:4px;">${labels[f]} — texto salvo no envio original</div>
+            <div style="font-size:13px; white-space:pre-wrap;">${escapeHtml(entry.answers[f] || "(em branco)")}</div>
+          </div>
+        `).join("");
+        resultDiv.innerHTML = `
+          <div><span class="badge ok">código autêntico</span> — envio de <strong>${escapeHtml(entry.nome)}</strong> (${escapeHtml(entry.turma || "sem turma")}), em ${new Date(entry.when).toLocaleString("pt-BR")}.</div>
+          <div class="note" style="margin-top:8px; padding-top:8px; border-top:none;">Compare o texto abaixo com o conteúdo do PDF entregue. Se houver qualquer diferença, o arquivo foi alterado depois do envio.</div>
+          ${originalHtml}
+        `;
       } else {
         resultDiv.innerHTML = `<span class="badge flag">código não encontrado</span> — nenhum envio com esse código foi registrado neste site.`;
       }
@@ -528,13 +540,17 @@
   });
 
   // gera um código curto e determinístico a partir do conteúdo do envio,
-  // usado como assinatura para provar que o .doc saiu deste site
+  // usado como assinatura para provar que o .pdf saiu deste site
   async function generateCode(str){
     const enc = new TextEncoder().encode(str);
     const hashBuf = await crypto.subtle.digest("SHA-256", enc);
     const hex = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, "0")).join("").toUpperCase();
     return hex.slice(0, 16).match(/.{1,4}/g).join("-");
   }
+
+  // hash da senha da/do professor usada para embutir no rodapé do PDF
+  // (a proteção real do arquivo é feita pela criptografia do jsPDF, não por este hash)
+  const PDF_OWNER_PASSWORD = "951753";
 
   function escapeHtmlDoc(str){
     return (str || "")
@@ -544,64 +560,100 @@
       .replace(/\n/g, "<br>");
   }
 
-  function buildDocHtml(record){
+  function buildAndDownloadPdf(record){
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({
+      unit: "pt",
+      format: "a4",
+      encryption: {
+        userPassword: "",              // abre sem senha, para qualquer um ler
+        ownerPassword: PDF_OWNER_PASSWORD, // exigida para editar/copiar/tirar a proteção
+        userPermissions: ["print"]     // só impressão liberada sem a senha do professor
+      }
+    });
+
+    const marginX = 50;
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const maxWidth = pageWidth - marginX * 2;
+    let y = 60;
+
+    function ensureSpace(next){
+      if (y + next > pageHeight - 50){ doc.addPage(); y = 60; }
+    }
+
+    doc.setFont("times", "bold");
+    doc.setFontSize(20);
+    doc.text("Resumo — Métodos Ágeis", marginX, y);
+    y += 26;
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11);
+    doc.setTextColor(30);
+    doc.text(`Aluno: ${record.nome}    Turma: ${record.turma || "—"}`, marginX, y);
+    y += 16;
+    doc.text(`Enviado em: ${new Date(record.when).toLocaleString("pt-BR")}`, marginX, y);
+    y += 14;
+    doc.setDrawColor(180);
+    doc.line(marginX, y, pageWidth - marginX, y);
+    y += 20;
+
     const labels = { xp: "XP — Extreme Programming", scrum: "Scrum", kanban: "Kanban" };
-    const dateStr = new Date(record.when).toLocaleString("pt-BR");
 
-    const secoes = fields.map(f => {
-      const info = classify(record.pct[f]);
-      return `
-        <h2 style="font-family:Georgia,'Times New Roman',serif;color:#22303F;font-size:16pt;margin:18pt 0 4pt;">${labels[f]}</h2>
-        <p style="font-family:'Courier New',monospace;font-size:9pt;color:#666;margin:0 0 8pt;">Indicador de digitação: ${info.label} — ${record.pct[f]}% do texto inserido por colagem</p>
-        <p style="font-family:Calibri,Arial,sans-serif;font-size:11pt;line-height:1.5;margin:0 0 6pt;">${escapeHtmlDoc(record.answers[f]) || "<em>Não respondido.</em>"}</p>
-      `;
-    }).join('<hr style="border:none;border-top:1px solid #ccc;margin:10pt 0;">');
+    fields.forEach(field => {
+      ensureSpace(40);
+      doc.setFont("times", "bold");
+      doc.setFontSize(14);
+      doc.setTextColor(30);
+      doc.text(labels[field], marginX, y);
+      y += 16;
 
-    return `<html xmlns:o="urn:schemas-microsoft-com:office:office"
-                  xmlns:w="urn:schemas-microsoft-com:office:word"
-                  xmlns="http://www.w3.org/TR/REC-html40">
-<head>
-<meta charset="utf-8">
-<!--[if gte mso 9]>
-<xml>
- <w:WordDocument>
-  <w:DocumentProtection>ReadOnly</w:DocumentProtection>
-  <w:Enforcement>On</w:Enforcement>
- </w:WordDocument>
-</xml>
-<![endif]-->
-<style>
-  body{ font-family: Calibri, Arial, sans-serif; color:#22303F; }
-</style>
-</head>
-<body>
-  <h1 style="font-family:Georgia,'Times New Roman',serif;font-size:22pt;margin:0 0 4pt;">Resumo — Métodos Ágeis</h1>
-  <p style="font-family:Calibri,Arial,sans-serif;font-size:11pt;margin:0 0 2pt;"><strong>Aluno:</strong> ${escapeHtmlDoc(record.nome)} &nbsp;&nbsp; <strong>Turma:</strong> ${escapeHtmlDoc(record.turma) || "—"}</p>
-  <p style="font-family:Calibri,Arial,sans-serif;font-size:11pt;margin:0 0 10pt;"><strong>Enviado em:</strong> ${dateStr}</p>
-  <hr style="border:none;border-top:1px solid #999;">
-  ${secoes}
-  <hr style="border:none;border-top:1px solid #999;margin-top:14pt;">
-  <p style="font-family:'Courier New',monospace;font-size:8.5pt;color:#888;margin-top:10pt;line-height:1.5;">
-    Documento gerado automaticamente pelo Quadro de Respostas — Métodos Ágeis.<br>
-    Código de verificação: <strong>${record.code}</strong><br>
-    Este arquivo abre em modo somente leitura. Para confirmar que o código acima corresponde a um envio real, use o campo "Verificar código" no quadro do professor, na mesma página onde este trabalho foi feito.
-  </p>
-</body>
-</html>`;
-  }
+      const info = classify(record.pct[field]);
+      doc.setFont("courier", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(120);
+      doc.text(`Indicador de digitação: ${info.label} — ${record.pct[field]}% colado`, marginX, y);
+      y += 16;
 
-  function downloadDoc(record){
-    const html = buildDocHtml(record);
-    const blob = new Blob(["\ufeff", html], { type: "application/msword" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(11);
+      doc.setTextColor(30);
+      const text = (record.answers[field] || "").trim() || "(Não respondido.)";
+      const lines = doc.splitTextToSize(text, maxWidth);
+      lines.forEach(line => {
+        ensureSpace(15);
+        doc.text(line, marginX, y);
+        y += 15;
+      });
+      y += 12;
+    });
+
+    ensureSpace(70);
+    doc.setDrawColor(180);
+    doc.line(marginX, y, pageWidth - marginX, y);
+    y += 18;
+
+    doc.setFont("courier", "normal");
+    doc.setFontSize(8.5);
+    doc.setTextColor(130);
+    const rodape = [
+      "Documento gerado automaticamente pelo Quadro de Respostas — Métodos Ágeis.",
+      `Código de verificação: ${record.code}`,
+      "Este PDF é protegido: copiar texto ou editar sem a senha do professor não é permitido pelos leitores compatíveis.",
+      'Para conferir se o conteúdo abaixo não foi alterado depois do envio, use "Verificar código" no quadro do professor e compare com o texto salvo no site.'
+    ];
+    rodape.forEach(paragrafo => {
+      const wrapped = doc.splitTextToSize(paragrafo, maxWidth);
+      wrapped.forEach(line => {
+        ensureSpace(11);
+        doc.text(line, marginX, y);
+        y += 11;
+      });
+      y += 4;
+    });
+
     const nomeArquivo = (record.nome || "aluno").trim().replace(/\s+/g, "_");
-    a.href = url;
-    a.download = `resumo_agil_${nomeArquivo}.doc`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    doc.save(`resumo_agil_${nomeArquivo}.pdf`);
   }
 
   document.getElementById("submitBtn").addEventListener("click", async () => {
@@ -659,7 +711,7 @@
       console.error("Falha ao salvar envio:", err);
     }
 
-    downloadDoc(record);
+    buildAndDownloadPdf(record);
   });
 </script>
 </body>
